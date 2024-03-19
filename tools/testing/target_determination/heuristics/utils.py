@@ -3,9 +3,11 @@ import os
 import subprocess
 from collections import defaultdict
 from pathlib import Path
-from typing import cast, Dict, List, Set, Union
+from typing import Optional, cast, Dict, List, Set, Union
 from urllib.request import Request, urlopen
 from warnings import warn
+from functools import lru_cache
+import re
 
 from tools.testing.test_run import TestRun
 
@@ -20,20 +22,32 @@ def python_test_file_to_test_name(tests: Set[str]) -> Set[str]:
     return valid_tests
 
 
+@lru_cache()
+def get_pr_number() -> Optional[int]:
+    pr_number = os.environ.get("PR_NUMBER")
+    if pr_number is None:
+        re_match = re.match(r"^refs/tags/.*/(\d+)$", os.environ.get("GITHUB_REF", ""))
+        if re_match is not None:
+            pr_number = re_match.group(1)
+    if pr_number is not None:
+        return int(pr_number)
+    return None
+
+
+@lru_cache()
+def get_base_ref() -> str:
+    pr_number = get_pr_number()
+    if pr_number is not None:
+        with urlopen(
+            Request(f"https://api.github.com/repos/pytorch/pytorch/pulls/{pr_number}")
+        ) as conn:
+            pr_info = json.loads(conn.read().decode())
+            return pr_info["base"]["ref"]
+    return "HEAD^"
+
+
 def query_changed_files() -> List[str]:
-    default_branch = f"origin/{os.environ.get('GIT_DEFAULT_BRANCH', 'main')}"
-    merge_base = (
-        subprocess.check_output(["git", "merge-base", default_branch, "HEAD"])
-        .decode()
-        .strip()
-    )
-
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
-
-    base_commit = merge_base
-    if base_commit == head:
-        # We are on the default branch, so check for changes since the last commit
-        base_commit = "HEAD^"
+    base_commit = get_base_ref()
 
     proc = subprocess.run(
         ["git", "diff", "--name-only", base_commit, "HEAD"],
@@ -51,20 +65,7 @@ def query_changed_files() -> List[str]:
 
 def get_git_commit_info() -> str:
     """Gets the commit info since the last commit on the default branch."""
-    default_branch = f"origin/{os.environ.get('GIT_DEFAULT_BRANCH', 'main')}"
-
-    merge_base = (
-        subprocess.check_output(["git", "merge-base", default_branch, "HEAD"])
-        .decode()
-        .strip()
-    )
-
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
-
-    base_commit = merge_base
-    if base_commit == head:
-        # We are on the default branch, so check for changes since the last commit
-        base_commit = "HEAD^"
+    base_commit = get_base_ref()
 
     return (
         subprocess.check_output(
