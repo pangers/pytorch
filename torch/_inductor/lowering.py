@@ -5980,12 +5980,21 @@ def associative_scan(input, dim: int, combine_fn: torch.fx.GraphModule):
     from .subgraph_lowering import InputDescriptor, lower_pointwise_subgraph
 
     subgraph_inputs = [
-        InputDescriptor(dtype=input.get_dtype(), device=input.get_device())
-        for _ in range(2)
+        InputDescriptor(dtype=x.get_dtype(), device=x.get_device())
+        for x in itertools.chain(input, input)
     ]
     lowered_combine_fn = lower_pointwise_subgraph(combine_fn, subgraph_inputs)
-    kwargs = _make_scan_inner(input, axis=dim, dtype=None)
-    result = ir.Scan.create(**kwargs, combine_fn=lowered_combine_fn)
+
+    def combine_fn(lhs, rhs):
+        return lowered_combine_fn(
+            *pytree.tree_leaves(lhs),
+            *pytree.tree_leaves(rhs),
+        )
+
+    kwargs = _make_scan_inner(input[0], axis=dim, dtype=None)
+    kwargs["dtypes"] = tuple(x.get_dtype() for x in input)
+    kwargs["inner_fns"] = tuple(x.make_loader() for x in input)
+    result = ir.Scan.create(**kwargs, combine_fn=combine_fn)
     assert result is not None
     return result
 
