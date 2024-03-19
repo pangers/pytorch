@@ -1,13 +1,13 @@
 import json
 import os
+import re
 import subprocess
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
-from typing import Optional, cast, Dict, List, Set, Union
+from typing import cast, Dict, List, Optional, Set, Union
 from urllib.request import Request, urlopen
 from warnings import warn
-from functools import lru_cache
-import re
 
 from tools.testing.test_run import TestRun
 
@@ -22,7 +22,7 @@ def python_test_file_to_test_name(tests: Set[str]) -> Set[str]:
     return valid_tests
 
 
-@lru_cache()
+@lru_cache
 def get_pr_number() -> Optional[int]:
     pr_number = os.environ.get("PR_NUMBER")
     if pr_number is None:
@@ -34,7 +34,7 @@ def get_pr_number() -> Optional[int]:
     return None
 
 
-@lru_cache()
+@lru_cache
 def get_base_ref() -> str:
     pr_number = get_pr_number()
     if pr_number is not None:
@@ -42,7 +42,8 @@ def get_base_ref() -> str:
             Request(f"https://api.github.com/repos/pytorch/pytorch/pulls/{pr_number}")
         ) as conn:
             pr_info = json.loads(conn.read().decode())
-            return pr_info["base"]["ref"]
+            base: str = pr_info["base"]["ref"]
+            return base
     return "HEAD^"
 
 
