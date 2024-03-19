@@ -896,6 +896,12 @@ Tensor _nested_get_jagged_dummy(const Tensor& any) {
       false, "_nested_get_jagged_dummy(): expected to be implemented from Python");
 }
 
+std::tuple<Tensor, Tensor> _nested_compute_contiguous_strides_offsets(const Tensor& nested_size) {
+  return std::make_tuple(
+      construct_nested_strides(nested_size),
+      construct_offsets(nested_size));
+}
+
 // See Note [Special size rule for nested tensor]
 Tensor reshape_nested(const Tensor& self, IntArrayRef proposed_shape) {
   TORCH_CHECK(
