@@ -2390,38 +2390,24 @@ class TritonKernel(Kernel):
             [Tuple[CSEVariable, ...], Tuple[CSEVariable, ...]], Tuple[CSEVariable, ...]
         ],
         values: Tuple[CSEVariable, ...],
-        inits: Tuple[int, ...],
     ) -> Tuple[CSEVariable, ...]:
         assert self.inside_reduction
         masks = {f"{tree.prefix}mask" for tree in self.range_trees}
         self.filter_masks(masks)
         masks = sorted(masks)
-        if self._load_mask:
-            masks.append(self._load_mask)
+        assert not self._load_mask, "ops.scan not supported inside ops.masked"
         reduction_range_prefix = self.range_trees[-1].prefix
 
-        masked_values = []
         broadcasted_values = []
         accumulators = []
 
+        cse_compute = functools.partial(self.cse.generate, self.compute)
         combine_helper_fn = self._lift_helper(combine_fn, len(values))
         dim = self.triton_tensor_ndim() - 1
 
-        for value, init, dtype in zip(values, inits, dtypes):
-            default = triton_constant(init)
+        for value, dtype in zip(values, dtypes):
             acc_type = triton_acc_type(dtype)
             cond = " & ".join(masks)
-
-            def where_cond(value):
-                if not cond:
-                    return value
-                default_tensor = self.cse.generate(
-                    self.body,
-                    f"tl.full({[1] * self.triton_tensor_ndim()}, {default}, {triton_compute_type(dtype)})",
-                )
-                return self.cse.generate(
-                    self.compute, f"tl.where({cond}, {value}, {default_tensor})"
-                )
 
             value_dtype = self.cse.generate(
                 self.compute,
@@ -2433,30 +2419,20 @@ class TritonKernel(Kernel):
             )
             broadcasted_values.append(value)
 
-            default = triton_constant(init)
-            default_tensor = self.cse.generate(
-                self.body,
-                f"tl.full({[1] * self.triton_tensor_ndim()}, {default}, {triton_compute_type(dtype)})",
-            )
             acc_type = triton_acc_type(dtype)
             cond = " & ".join(masks)
 
-            if self.persistent_reduction:
-                masked_value = where_cond(value)
-                masked_values.append(masked_value)
-            else:
+            if not self.persistent_reduction:
                 accumulator = self.cse.newvar()
                 reduced_size = self.dense_size_list()
                 reduced_size[-1] = "1"
                 reduced_size = f"[{', '.join(reduced_size)}]"
 
+                default = "float('nan')" if dtype.is_floating_point else "-1"
                 self.body.writeline(
                     f"{accumulator} = tl.full({reduced_size}, {default}, {acc_type})"
                 )
 
-                masked_value = where_cond(value)
-
-                masked_values.append(masked_value)
                 accumulators.append(accumulator)
 
         def csv(values):
@@ -2476,14 +2452,14 @@ class TritonKernel(Kernel):
                 self.cse.cache[cache_key] = result_var
             return tuple(result_vars)
 
-        result_vars = cse_multiple(
-            f"tl.associative_scan(({csv(masked_values)}), {dim}, {combine_helper_fn})",
+        partial_scan_vars = cse_multiple(
+            f"tl.associative_scan(({csv(broadcasted_values)}), {dim}, {combine_helper_fn})",
             len(values),
             masks,
         )
 
         if not self.persistent_reduction:
-            partial_reduce = pytree.tree_map(
+            partial_reduce_vars = pytree.tree_map(
                 self.reduction_resize,
                 cse_multiple(
                     f"tl.reduce(({csv(broadcasted_values)}), {dim}, {combine_helper_fn})",
@@ -2491,13 +2467,20 @@ class TritonKernel(Kernel):
                     None,
                 ),
             )
-            accs_next = combine_fn(tuple(accumulators), partial_reduce)
-            new_result_vars = combine_fn(tuple(accumulators), result_vars)
+            accs_next = combine_fn(tuple(accumulators), partial_reduce_vars)
+            full_scan_vars = combine_fn(tuple(accumulators), partial_scan_vars)
             result_vars = [
-                self.cse.generate(self.compute, var) for var in new_result_vars
+                cse_compute(f"tl.where(roffset > 0, {full_scan}, {partial_scan})")
+                for full_scan, partial_scan in zip(full_scan_vars, partial_scan_vars)
             ]
-            for acc_next, accumulator in zip(accs_next, accumulators):
-                self.compute.writeline(f"{accumulator} = {acc_next}")
+            for acc_next, accumulator, partial_reduce in zip(
+                accs_next, accumulators, partial_reduce_vars
+            ):
+                self.compute.writeline(
+                    f"{accumulator} = tl.where(roffset > 0, {acc_next}, {partial_reduce})"
+                )
+        else:
+            result_vars = partial_scan_vars
 
         for result_var in result_vars:
             result_var.mask_vars = masks  # type: ignore[attr-defined]
