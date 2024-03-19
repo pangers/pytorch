@@ -834,17 +834,14 @@ class TritonOverrides(OpOverrides):
         return f"libdevice.nearbyint({x})"
 
     @staticmethod
-    def floor(x):
-        return f"libdevice.floor({x})"
+    def truediv(a, b):
+        # Giving an explicit rounding mode prevents unsafe optimizations
+        # See gh-101039
+        return f"tl.math.div_rn({a}, {b})"
 
     @staticmethod
-    def floordiv(a, b):
-        # See the comment in lowering.div_mode. a and b are integer type.
-        # Similar to div_floor_kernel_cuda in pytorch core.
-        # Notice that // in triton behaves as truncdiv instead of floordiv
-        quot = f"{a} // {b}"
-        rem = f"{a} % {b}"
-        return f"tl.where(({a} < 0) != ({b} < 0), tl.where({rem} != 0, {quot} - 1, {quot}), {quot})"
+    def floor(x):
+        return f"libdevice.floor({x})"
 
     @staticmethod
     def sign(x):
