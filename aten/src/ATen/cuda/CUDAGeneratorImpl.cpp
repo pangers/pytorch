@@ -7,6 +7,7 @@
 #include <c10/cuda/CUDAFunctions.h>
 #include <c10/util/CallOnce.h>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
+#include <deque>
 
 namespace at {
 namespace cuda::detail {
